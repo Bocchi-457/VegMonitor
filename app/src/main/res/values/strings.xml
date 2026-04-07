@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">蔬控宝</string>
+    <string name="device_control">设备控制</string>
+    <string name="heat">加热</string>
+    <string name="refrigeration">制冷</string>
+    <string name="humidification">加湿</string>
+    <string name="dehumidification">除湿</string>
+    <string name="current_temp">当前温度</string>
+    <string name="current_hum">当前湿度</string>
+    <string name="threshold_setting">阈值设置</string>
+    <string name="save">保存</string>
+    <string name="issue">下发</string>
+</resources>
