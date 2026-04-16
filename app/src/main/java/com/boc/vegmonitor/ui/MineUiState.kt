@@ -13,5 +13,9 @@ data class MineUiState(
     // 网络请求与提示状态
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
-    val successMessage: String? = null
+    val successMessage: String? = null,
+    
+    // 登录锁定状态
+    val isLocked: Boolean = false,
+    val lockRemainingSeconds: Int = 0
 )

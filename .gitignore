@@ -13,3 +13,8 @@
 .externalNativeBuild
 .cxx
 local.properties
+/.lingma/rules/coding_rules.md
+/.lingma
+/app/src/main/java/com/boc/vegmonitor/data/temp/TCP协议接入 _ 巴法文档中心.html
+/app/src/main/java/com/boc/vegmonitor/data/temp/用户接口 _ 巴法文档中心.html
+/app/src/main/java/com/boc/vegmonitor/data/temp/

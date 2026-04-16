@@ -70,4 +70,7 @@ dependencies {
     implementation("com.squareup.retrofit2:converter-gson:3.0.0")
     // OkHttp (用于打印网络日志，方便调试)
     implementation(libs.logging.interceptor)
+    
+    // DataStore for persistent storage
+    implementation("androidx.datastore:datastore-preferences:1.0.0")
 }

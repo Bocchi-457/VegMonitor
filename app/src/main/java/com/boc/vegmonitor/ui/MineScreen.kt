@@ -2,17 +2,24 @@ package com.boc.vegmonitor.ui
 
 import android.annotation.SuppressLint
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountCircle
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -20,9 +27,11 @@ import com.boc.vegmonitor.ui.theme.VegMonitorTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MineScreen(viewModel: MineViewModel) {
+fun MineScreen(
+    viewModel: MineViewModel,
+    snackbarHostState: SnackbarHostState
+) {
     val state by viewModel.uiState.collectAsState()
-    val snackbarHostState = remember { SnackbarHostState() }
 
     // 处理提示信息
     LaunchedEffect(state.errorMessage, state.successMessage) {
@@ -37,38 +46,36 @@ fun MineScreen(viewModel: MineViewModel) {
     }
 
     Column(
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp)
+            .verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        TopAppBar(title = { Text("用户中心") },
-            modifier = Modifier)
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp)
-                .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            if (state.isLoggedIn) {
-                // 已登录界面
-                LoggedInCard(
-                    username = state.currentUsername,
-                    uid = state.currentUid,
-                    onLogout = { viewModel.logout() })
-            } else {
-                // 未登录界面（登录/注册 或 直接输入UID）
-                LoginCard(state = state, viewModel = viewModel)
-                Spacer(modifier = Modifier.height(24.dp))
-                DirectUidCard(state = state, viewModel = viewModel)
-            }
+        if (state.isLoggedIn) {
+            // 已登录界面
+            LoggedInCard(
+                username = state.currentUsername,
+                uid = state.currentUid,
+                onLogout = { viewModel.logout() },
+                onCopySuccess = {
+                    viewModel.showCopySuccessMessage()
+                }
+            )
+        } else {
+            // 未登录界面（登录/注册 或 直接输入UID）
+            LoginCard(state = state, viewModel = viewModel)
+            Spacer(modifier = Modifier.height(24.dp))
+            DirectUidCard(state = state, viewModel = viewModel)
         }
     }
-
-    SnackbarHost(hostState = snackbarHostState)
 }
 
 @Composable
-fun LoggedInCard(username: String, uid: String, onLogout: () -> Unit) {
+fun LoggedInCard(username: String, uid: String, onLogout: () -> Unit, onCopySuccess: () -> Unit) {
+    var isUidVisible by remember { mutableStateOf(false) }
+    val clipboardManager = LocalClipboardManager.current
+    
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
@@ -87,7 +94,38 @@ fun LoggedInCard(username: String, uid: String, onLogout: () -> Unit) {
             Text(username, fontSize = 24.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(8.dp))
             Text("巴法云私钥 (UID):", color = Color.Gray)
-            Text(uid, fontSize = 14.sp)
+            
+            // 私钥显示区域（支持可见性切换和复制）
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .clickable(enabled = isUidVisible) {
+                        // 点击复制私钥
+                        clipboardManager.setText(AnnotatedString(uid))
+                        // 通知父组件显示提示
+                        onCopySuccess()
+                    }
+                    .padding(8.dp)
+            ) {
+                Text(
+                    text = if (isUidVisible) uid else "•".repeat(32),
+                    fontSize = 14.sp,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.weight(1f)
+                )
+                
+                IconButton(onClick = { isUidVisible = !isUidVisible }) {
+                    Icon(
+                        imageVector = if (isUidVisible) 
+                            Icons.Rounded.VisibilityOff 
+                        else 
+                            Icons.Rounded.Visibility,
+                        contentDescription = if (isUidVisible) "隐藏私钥" else "显示私钥",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+            
             Spacer(modifier = Modifier.height(32.dp))
             Button(
                 onClick = onLogout,
@@ -102,6 +140,8 @@ fun LoggedInCard(username: String, uid: String, onLogout: () -> Unit) {
 
 @Composable
 fun LoginCard(state: MineUiState, viewModel: MineViewModel) {
+    var isPasswordVisible by remember { mutableStateOf(false) }
+    
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -112,31 +152,43 @@ fun LoginCard(state: MineUiState, viewModel: MineViewModel) {
                 onValueChange = { viewModel.onUsernameChange(it) },
                 label = { Text("邮箱/手机号") },
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true
+                singleLine = true,
+                isError = state.errorMessage?.contains("账号") == true,
+                supportingText = if (state.errorMessage?.contains("账号") == true) {
+                    { Text(state.errorMessage!!) }
+                } else null
             )
             OutlinedTextField(
                 value = state.passwordInput,
                 onValueChange = { viewModel.onPasswordChange(it) },
                 label = { Text("密码") },
                 modifier = Modifier.fillMaxWidth(),
-                visualTransformation = PasswordVisualTransformation(),
-                singleLine = true
+                visualTransformation = if (isPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                singleLine = true,
+                trailingIcon = {
+                    IconButton(onClick = { isPasswordVisible = !isPasswordVisible }) {
+                        Icon(
+                            imageVector = if (isPasswordVisible) 
+                                Icons.Rounded.VisibilityOff 
+                            else 
+                                Icons.Rounded.Visibility,
+                            contentDescription = if (isPasswordVisible) "隐藏密码" else "显示密码"
+                        )
+                    }
+                }
             )
-            if (state.isLoading) {
-                CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
-            } else {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = { viewModel.register() }, modifier = Modifier.weight(1f)
-                    ) {
-                        Text("注册")
-                    }
-                    Button(onClick = { viewModel.login() }, modifier = Modifier.weight(1f)) {
-                        Text("登录")
-                    }
+            Button(
+                onClick = { viewModel.login() },
+                enabled = !state.isLoading && !state.isLocked,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (state.isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        color = Color.White
+                    )
+                } else {
+                    Text(if (state.isLocked) "请等待${state.lockRemainingSeconds}秒" else "登录")
                 }
             }
         }
@@ -175,6 +227,10 @@ fun DirectUidCard(state: MineUiState, viewModel: MineViewModel) {
 @Composable
 fun MineScreenPreview() {
     VegMonitorTheme {
-        MineScreen(viewModel = MineViewModel())
+        val snackbarHostState = remember { SnackbarHostState() }
+        MineScreen(
+            viewModel = MineViewModel(),
+            snackbarHostState = snackbarHostState
+        )
     }
 }

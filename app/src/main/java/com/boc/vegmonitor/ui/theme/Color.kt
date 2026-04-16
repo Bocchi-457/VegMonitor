@@ -2,7 +2,7 @@ package com.boc.vegmonitor.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-val primaryLight = Color(0xFF006E1C)
+val primaryLight = Color(0xFF018F05)
 val onPrimaryLight = Color(0xFFFFFFFF)
 val primaryContainerLight = Color(0xFF4CAF50)
 val onPrimaryContainerLight = Color(0xFF003C0B)

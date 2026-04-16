@@ -11,11 +11,45 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.abs
+
+/**
+ * String扩展函数：首字母大写
+ */
+private fun String.capitalize(): String {
+    return this.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+}
 
 class MonitorViewModel(
     private val userDao: UserDao? = null,
     private val tcpClient: BemfaTcpClient = BemfaTcpClient()
 ) : ViewModel() {
+
+    companion object {
+        // 点击节流时间间隔（毫秒）
+        private const val CLICK_THROTTLE_MS = 2000L
+        
+        // 硬件离线判定超时时间（毫秒）
+        private const val HARDWARE_OFFLINE_TIMEOUT = 10000L
+        
+        // 硬件在线状态检查间隔（毫秒）
+        private const val ONLINE_CHECK_INTERVAL_MS = 3000L
+        
+        // TCP重连延迟时间（毫秒）
+        private const val RECONNECT_DELAY_MS = 2000L
+        
+        // TCP断开后重新连接前的等待时间（毫秒）
+        private const val DISCONNECT_DELAY_MS = 500L
+        
+        // 指令确认检查间隔（毫秒）
+        private const val CONFIRMATION_CHECK_INTERVAL_MS = 100L
+        
+        // 最大重试次数
+        private const val MAX_RETRY_COUNT = 3
+        
+        // 每次重试超时时间（毫秒）
+        private const val RETRY_TIMEOUT_MS = 2000L
+    }
 
     private val _uiState = MutableStateFlow(MonitorUiState())
     val uiState: StateFlow<MonitorUiState> = _uiState.asStateFlow()
@@ -23,8 +57,7 @@ class MonitorViewModel(
     private var currentUserUid: String = ""
     
     // 硬件在线状态判断：记录最后一次收到数据的时间
-    private var lastDataReceivedTime: Long = System.currentTimeMillis() // 初始化为当前时间，避免启动时误判离线
-    private val HARDWARE_OFFLINE_TIMEOUT = 20000L // 20秒未收到数据视为离线
+    private var lastDataReceivedTime: Long = 0L // 初始化为0，启动时默认为离线状态
     
     // 重连管理：防止并发重连
     private var reconnectJob: Job? = null
@@ -58,7 +91,6 @@ class MonitorViewModel(
     
     // 点击节流管理（防止短时间内连续点击）
     private val _lastClickTimes = mutableMapOf<String, Long>()
-    private val CLICK_THROTTLE_MS = 2000L // 2s 内不允许重复点击
     
     /**
      * 清除节流事件（Snackbar 显示后调用）
@@ -138,7 +170,7 @@ class MonitorViewModel(
                 
                 // 启动新的重连任务
                 reconnectJob = viewModelScope.launch {
-                    delay(2000) // 等待2秒后重连
+                    delay(RECONNECT_DELAY_MS)
                     connectToBemfa()
                 }
             }
@@ -165,7 +197,7 @@ class MonitorViewModel(
                     // 如果已连接，先断开
                     if (tcpClient.isConnected()) {
                         tcpClient.disconnect()
-                        delay(500)
+                        delay(DISCONNECT_DELAY_MS)
                     }
                     // 重新连接
                     tcpClient.connectAndSubscribe(currentUserUid)
@@ -179,12 +211,12 @@ class MonitorViewModel(
 
     /**
      * 启动硬件在线状态检测定时器
-     * 每5秒检查一次，如果超过20秒未收到数据，则判定为离线
+     * 每5秒检查一次，如果超过10秒未收到数据，则判定为离线
      */
     private fun startHardwareOnlineCheck() {
         viewModelScope.launch {
             while (true) {
-                delay(5000) // 每5秒检查一次
+                delay(ONLINE_CHECK_INTERVAL_MS)
                 val currentTime = System.currentTimeMillis()
                 val timeSinceLastData = currentTime - lastDataReceivedTime
                 val isHardwareOnline = timeSinceLastData < HARDWARE_OFFLINE_TIMEOUT
@@ -195,7 +227,7 @@ class MonitorViewModel(
                 if (_uiState.value.isOnline != isHardwareOnline) {
                     _uiState.update { it.copy(isOnline = isHardwareOnline) }
                     if (!isHardwareOnline) {
-                        android.util.Log.d("HardwareStatus", "⚠️ 硬件已离线（超过20秒未收到数据）")
+                        android.util.Log.d("HardwareStatus", "⚠️ 硬件已离线（超过10秒未收到数据）")
                     } else {
                         android.util.Log.d("HardwareStatus", "✅ 硬件已上线")
                     }
@@ -208,159 +240,227 @@ class MonitorViewModel(
      * 解析巴法云返回的协议数据
      */
     private fun parseBemfaMessage(rawMsg: String) {
+        // 温湿度和模式数据 (格式：Mode:1 th:29 tl:23 hh:55 hl:40 jr:0 zl:0 cs:0 js:0 temp:26.7 humi:42.7)
+        if (!rawMsg.contains("topic=data")) return
+        
         // 更新最后收到数据的时间（用于判断硬件在线状态）
         lastDataReceivedTime = System.currentTimeMillis()
-
-        // 温湿度和模式数据 (格式：Mode:1 th:29 tl:23 hh:55 hl:40 jr:0 zl:0 cs:0 js:0 temp:26.7 humi:42.7)
-        if (rawMsg.contains("topic=data")) {
-            val msgPart = rawMsg.substringAfter("msg=")
-
-            // 解析当前温湿度
-            val tempMatch = Regex("temp:([+-]?\\d+\\.?\\d*)").find(msgPart)
-            val humiMatch = Regex("humi:([\\d\\.]+)").find(msgPart)
-            
-            // 解析控制模式
-            val modeMatch = Regex("Mode:(\\d+)").find(msgPart)
-            
-            // 解析阈值：th(温度上限), tl(温度下限), hh(湿度上限), hl(湿度下限)
-            val thMatch = Regex("th:([\\d\\.]+)").find(msgPart)
-            val tlMatch = Regex("tl:([\\d\\.]+)").find(msgPart)
-            val hhMatch = Regex("hh:([\\d\\.]+)").find(msgPart)
-            val hlMatch = Regex("hl:([\\d\\.]+)").find(msgPart)
-            
-            // 解析设备状态：jr(加热), zl(制冷), cs(除湿), js(加湿)，0为关，1为开
-            val jrMatch = Regex("jr:(\\d+)").find(msgPart)
-            val zlMatch = Regex("zl:(\\d+)").find(msgPart)
-            val csMatch = Regex("cs:(\\d+)").find(msgPart)
-            val jsMatch = Regex("js:(\\d+)").find(msgPart)
-
-            _uiState.update { state ->
-                val newState = state.copy(
-                    // 不再在此处设置 isOnline，由定时器统一判断
-                    currentTemp = tempMatch?.groupValues?.get(1)?.toFloatOrNull() ?: state.currentTemp,
-                    currentHumidity = humiMatch?.groupValues?.get(1)?.toFloatOrNull() ?: state.currentHumidity,
-                    // 防抖逻辑：如果设备处于 pending 状态，不更新其状态，避免弹跳
-                    isAutoMode = if (_pendingOperations.value.containsKey("mode")) {
-                        state.isAutoMode  // pending 期间保持原状态
-                    } else {
-                        modeMatch?.groupValues?.get(1) == "1" // 非 pending 期间接受服务器状态
-                    },
-                    // 防抖逻辑：阈值在 pending 期间不更新，避免被旧数据覆盖
-                    tempUpperLimit = if (_pendingOperations.value.containsKey("threshold")) {
-                        state.tempUpperLimit  // pending 期间保持乐观更新的值
-                    } else {
-                        thMatch?.groupValues?.get(1)?.toFloatOrNull() ?: state.tempUpperLimit
-                    },
-                    tempLowerLimit = if (_pendingOperations.value.containsKey("threshold")) {
-                        state.tempLowerLimit
-                    } else {
-                        tlMatch?.groupValues?.get(1)?.toFloatOrNull() ?: state.tempLowerLimit
-                    },
-                    humUpperLimit = if (_pendingOperations.value.containsKey("threshold")) {
-                        state.humUpperLimit
-                    } else {
-                        hhMatch?.groupValues?.get(1)?.toFloatOrNull() ?: state.humUpperLimit
-                    },
-                    humLowerLimit = if (_pendingOperations.value.containsKey("threshold")) {
-                        state.humLowerLimit
-                    } else {
-                        hlMatch?.groupValues?.get(1)?.toFloatOrNull() ?: state.humLowerLimit
-                    },
-                    // 防抖逻辑：设备状态在 pending 期间不更新
-                    isHeaterOn = if (_pendingOperations.value.containsKey("heater")) {
-                        state.isHeaterOn  // pending 期间保持乐观更新的状态
-                    } else {
-                        jrMatch?.groupValues?.get(1) == "1" // 非 pending 期间接受服务器状态
-                    },
-                    isCoolerOn = if (_pendingOperations.value.containsKey("cooler")) {
-                        state.isCoolerOn
-                    } else {
-                        zlMatch?.groupValues?.get(1) == "1"
-                    },
-                    isDehumidifierOn = if (_pendingOperations.value.containsKey("dehumidifier")) {
-                        state.isDehumidifierOn
-                    } else {
-                        csMatch?.groupValues?.get(1) == "1"
-                    },
-                    isHumidifierOn = if (_pendingOperations.value.containsKey("humidifier")) {
-                        state.isHumidifierOn
-                    } else {
-                        jsMatch?.groupValues?.get(1) == "1"
-                    }
-                )
-                
-                // 检查是否有 pending 操作需要确认
-                if (_pendingOperations.value.containsKey("mode") && modeMatch != null) {
-                    confirmDeviceState("mode")
+        
+        // 收到数据则说明硬件已上线
+        _uiState.update { it.copy(isOnline = true) }
+        
+        val msgPart = rawMsg.substringAfter("msg=")
+        
+        // 解析传感器数据
+        val sensorData = parseSensorData(msgPart)
+        
+        // 更新UI状态
+        updateUiWithSensorData(sensorData)
+        
+        // 确认pending操作
+        confirmPendingOperations(sensorData)
+    }
+    
+    /**
+     * 数据类：封装解析后的传感器数据
+     */
+    private data class SensorData(
+        val temp: Float? = null,
+        val humidity: Float? = null,
+        val mode: String? = null,
+        val tempUpper: String? = null,
+        val tempLower: String? = null,
+        val humUpper: String? = null,
+        val humLower: String? = null,
+        val heater: String? = null,
+        val cooler: String? = null,
+        val dehumidifier: String? = null,
+        val humidifier: String? = null
+    )
+    
+    /**
+     * 解析传感器数据
+     */
+    private fun parseSensorData(msgPart: String): SensorData {
+        // 解析当前温湿度
+        val tempMatch = Regex("""temp:([+-]?\d+\.?\d*)""").find(msgPart)
+        val humiMatch = Regex("""humi:([\d.]+)""").find(msgPart)
+        
+        // 解析控制模式
+        val modeMatch = Regex("""Mode:(\d+)""").find(msgPart)
+        
+        // 解析阈值：th(温度上限), tl(温度下限), hh(湿度上限), hl(湿度下限)
+        // 支持浮点数和负数（温度可能为负）
+        val thMatch = Regex("""th:([+-]?\d+\.?\d*)""").find(msgPart)
+        val tlMatch = Regex("""tl:([+-]?\d+\.?\d*)""").find(msgPart)
+        val hhMatch = Regex("""hh:([+-]?\d+\.?\d*)""").find(msgPart)
+        val hlMatch = Regex("""hl:([+-]?\d+\.?\d*)""").find(msgPart)
+        
+        // 解析设备状态：jr(加热), zl(制冷), cs(除湿), js(加湿)，0为关，1为开
+        val jrMatch = Regex("""jr:(\d+)""").find(msgPart)
+        val zlMatch = Regex("""zl:(\d+)""").find(msgPart)
+        val csMatch = Regex("""cs:(\d+)""").find(msgPart)
+        val jsMatch = Regex("""js:(\d+)""").find(msgPart)
+        
+        return SensorData(
+            temp = tempMatch?.groupValues?.getOrNull(1)?.toFloatOrNull(),
+            humidity = humiMatch?.groupValues?.getOrNull(1)?.toFloatOrNull(),
+            mode = modeMatch?.groupValues?.getOrNull(1),
+            tempUpper = thMatch?.groupValues?.getOrNull(1),
+            tempLower = tlMatch?.groupValues?.getOrNull(1),
+            humUpper = hhMatch?.groupValues?.getOrNull(1),
+            humLower = hlMatch?.groupValues?.getOrNull(1),
+            heater = jrMatch?.groupValues?.getOrNull(1),
+            cooler = zlMatch?.groupValues?.getOrNull(1),
+            dehumidifier = csMatch?.groupValues?.getOrNull(1),
+            humidifier = jsMatch?.groupValues?.getOrNull(1)
+        )
+    }
+    
+    /**
+     * 使用解析后的传感器数据更新UI状态
+     */
+    private fun updateUiWithSensorData(data: SensorData) {
+        _uiState.update { state ->
+            state.copy(
+                // 收到数据后标记为已接收
+                hasReceivedData = true,
+                // 如果新数据为 null，保留旧值（设备离线时保持最后已知数据）
+                currentTemp = data.temp ?: state.currentTemp,
+                currentHumidity = data.humidity ?: state.currentHumidity,
+                // 防抖逻辑：如果设备处于 pending 状态，不更新其状态，避免弹跳
+                isAutoMode = if (_pendingOperations.value.containsKey("mode")) {
+                    state.isAutoMode
+                } else {
+                    data.mode == "1"
+                },
+                // 防抖逻辑：阈值在 pending 期间不更新，避免被旧数据覆盖
+                tempUpperLimit = if (_pendingOperations.value.containsKey("threshold")) {
+                    state.tempUpperLimit
+                } else {
+                    data.tempUpper?.toFloatOrNull() ?: state.tempUpperLimit
+                },
+                tempLowerLimit = if (_pendingOperations.value.containsKey("threshold")) {
+                    state.tempLowerLimit
+                } else {
+                    data.tempLower?.toFloatOrNull() ?: state.tempLowerLimit
+                },
+                humUpperLimit = if (_pendingOperations.value.containsKey("threshold")) {
+                    state.humUpperLimit
+                } else {
+                    data.humUpper?.toFloatOrNull() ?: state.humUpperLimit
+                },
+                humLowerLimit = if (_pendingOperations.value.containsKey("threshold")) {
+                    state.humLowerLimit
+                } else {
+                    data.humLower?.toFloatOrNull() ?: state.humLowerLimit
+                },
+                // 防抖逻辑：设备状态在 pending 期间不更新
+                isHeaterOn = if (_pendingOperations.value.containsKey("heater")) {
+                    state.isHeaterOn
+                } else {
+                    data.heater == "1"
+                },
+                isCoolerOn = if (_pendingOperations.value.containsKey("cooler")) {
+                    state.isCoolerOn
+                } else {
+                    data.cooler == "1"
+                },
+                isDehumidifierOn = if (_pendingOperations.value.containsKey("dehumidifier")) {
+                    state.isDehumidifierOn
+                } else {
+                    data.dehumidifier == "1"
+                },
+                isHumidifierOn = if (_pendingOperations.value.containsKey("humidifier")) {
+                    state.isHumidifierOn
+                } else {
+                    data.humidifier == "1"
                 }
-                if (_pendingOperations.value.containsKey("heater") && jrMatch != null) {
-                    confirmDeviceState("heater")
-                }
-                if (_pendingOperations.value.containsKey("cooler") && zlMatch != null) {
-                    confirmDeviceState("cooler")
-                }
-                if (_pendingOperations.value.containsKey("humidifier") && jsMatch != null) {
-                    confirmDeviceState("humidifier")
-                }
-                if (_pendingOperations.value.containsKey("dehumidifier") && csMatch != null) {
-                    confirmDeviceState("dehumidifier")
-                }
-                // 阈值确认：检查服务器返回的阈值是否与期望值一致
-                if (_pendingOperations.value.containsKey("threshold")) {
-                    val pendingOp = _pendingOperations.value["threshold"]
-                    android.util.Log.d("ThresholdDebug", "========== 阈值确认检查 ==========")
-                    android.util.Log.d("ThresholdDebug", "pendingOp存在: ${pendingOp != null}")
-                    android.util.Log.d("ThresholdDebug", "thMatch存在: ${thMatch != null}, 值: ${thMatch?.groupValues?.get(1)}")
-                    android.util.Log.d("ThresholdDebug", "tlMatch存在: ${tlMatch != null}, 值: ${tlMatch?.groupValues?.get(1)}")
-                    android.util.Log.d("ThresholdDebug", "hhMatch存在: ${hhMatch != null}, 值: ${hhMatch?.groupValues?.get(1)}")
-                    android.util.Log.d("ThresholdDebug", "hlMatch存在: ${hlMatch != null}, 值: ${hlMatch?.groupValues?.get(1)}")
-                    
-                    if (pendingOp != null) {
-                        android.util.Log.d("ThresholdDebug", "期望值 - th:${pendingOp.expectedTempUpper}, tl:${pendingOp.expectedTempLower}, hh:${pendingOp.expectedHumUpper}, hl:${pendingOp.expectedHumLower}")
-                    }
-                    
-                    if (pendingOp != null && 
-                        thMatch != null && tlMatch != null && hhMatch != null && hlMatch != null) {
-                        
-                        val serverTempUpper = thMatch.groupValues.get(1).toFloatOrNull()
-                        val serverTempLower = tlMatch.groupValues.get(1).toFloatOrNull()
-                        val serverHumUpper = hhMatch.groupValues.get(1).toFloatOrNull()
-                        val serverHumLower = hlMatch.groupValues.get(1).toFloatOrNull()
-                        
-                        android.util.Log.d("ThresholdDebug", "解析后 - th:$serverTempUpper, tl:$serverTempLower, hh:$serverHumUpper, hl:$serverHumLower")
-                        
-                        // 比对是否一致（允许 0.1 的误差）
-                        val tempUpperMatch = serverTempUpper?.let { 
-                            Math.abs(it - (pendingOp.expectedTempUpper ?: 0f)) < 0.1f 
-                        } ?: false
-                        val tempLowerMatch = serverTempLower?.let { 
-                            Math.abs(it - (pendingOp.expectedTempLower ?: 0f)) < 0.1f 
-                        } ?: false
-                        val humUpperMatch = serverHumUpper?.let { 
-                            Math.abs(it - (pendingOp.expectedHumUpper ?: 0f)) < 0.1f 
-                        } ?: false
-                        val humLowerMatch = serverHumLower?.let { 
-                            Math.abs(it - (pendingOp.expectedHumLower ?: 0f)) < 0.1f 
-                        } ?: false
-                        
-                        android.util.Log.d("ThresholdDebug", "比对结果 - th匹配:$tempUpperMatch, tl匹配:$tempLowerMatch, hh匹配:$humUpperMatch, hl匹配:$humLowerMatch")
-                        
-                        // 所有阈值都匹配才确认成功
-                        if (tempUpperMatch && tempLowerMatch && humUpperMatch && humLowerMatch) {
-                            android.util.Log.d("ThresholdDebug", "✅ 阈值确认成功！")
-                            confirmDeviceState("threshold")
-                        } else {
-                            android.util.Log.d("ThresholdDebug", "❌ 阈值比对失败，不确认")
-                        }
-                    } else {
-                        android.util.Log.d("ThresholdDebug", "❌ 条件不满足，跳过确认")
-                    }
-                    android.util.Log.d("ThresholdDebug", "====================================")
-                }
-                
-                newState
-            }
+            )
         }
+    }
+    
+    /**
+     * 确认pending操作
+     */
+    private fun confirmPendingOperations(data: SensorData) {
+        // 确认各设备的pending操作
+        confirmDevicePendingOperation("mode", data.mode)
+        confirmDevicePendingOperation("heater", data.heater)
+        confirmDevicePendingOperation("cooler", data.cooler)
+        confirmDevicePendingOperation("humidifier", data.humidifier)
+        confirmDevicePendingOperation("dehumidifier", data.dehumidifier)
+        
+        // 确认阈值的pending操作
+        confirmThresholdPendingOperation(data)
+    }
+    
+    /**
+     * 确认单个设备的pending操作
+     */
+    private fun confirmDevicePendingOperation(deviceKey: String, serverValue: String?) {
+        if (!_pendingOperations.value.containsKey(deviceKey) || serverValue == null) return
+        
+        val pendingOp = _pendingOperations.value[deviceKey] ?: return
+        val expectedValue = if (pendingOp.targetState) "1" else "0"
+        
+        if (serverValue == expectedValue) {
+            android.util.Log.d("${deviceKey.capitalize()}Debug", "✅ ${getDeviceName(deviceKey)}确认成功 - 服务器:$serverValue, 期望:$expectedValue")
+            confirmDeviceState(deviceKey)
+        } else {
+            android.util.Log.d("${deviceKey.capitalize()}Debug", "❌ ${getDeviceName(deviceKey)}状态不匹配 - 服务器:$serverValue, 期望:$expectedValue")
+        }
+    }
+    
+    /**
+     * 确认阈值的pending操作
+     */
+    private fun confirmThresholdPendingOperation(data: SensorData) {
+        if (!_pendingOperations.value.containsKey("threshold")) return
+        
+        val pendingOp = _pendingOperations.value["threshold"] ?: return
+        
+        // 检查所有阈值字段是否都存在
+        if (data.tempUpper == null || data.tempLower == null || 
+            data.humUpper == null || data.humLower == null) {
+            android.util.Log.d("ThresholdDebug", "❌ 阈值数据不完整，跳过确认")
+            return
+        }
+        
+        // 解析服务器返回的阈值
+        val serverTempUpper = data.tempUpper.toFloatOrNull()
+        val serverTempLower = data.tempLower.toFloatOrNull()
+        val serverHumUpper = data.humUpper.toFloatOrNull()
+        val serverHumLower = data.humLower.toFloatOrNull()
+        
+        android.util.Log.d("ThresholdDebug", "========== 阈值确认检查 ==========")
+        android.util.Log.d("ThresholdDebug", "期望值 - th:${pendingOp.expectedTempUpper}, tl:${pendingOp.expectedTempLower}, hh:${pendingOp.expectedHumUpper}, hl:${pendingOp.expectedHumLower}")
+        android.util.Log.d("ThresholdDebug", "服务器 - th:$serverTempUpper, tl:$serverTempLower, hh:$serverHumUpper, hl:$serverHumLower")
+        
+        // 比对是否一致（允许 0.1 的误差）
+        val tempUpperMatch = serverTempUpper?.let { 
+            abs(it - (pendingOp.expectedTempUpper ?: 0f)) < 0.1f
+        } ?: false
+        val tempLowerMatch = serverTempLower?.let { 
+            abs(it - (pendingOp.expectedTempLower ?: 0f)) < 0.1f
+        } ?: false
+        val humUpperMatch = serverHumUpper?.let { 
+            abs(it - (pendingOp.expectedHumUpper ?: 0f)) < 0.1f
+        } ?: false
+        val humLowerMatch = serverHumLower?.let { 
+            abs(it - (pendingOp.expectedHumLower ?: 0f)) < 0.1f
+        } ?: false
+        
+        android.util.Log.d("ThresholdDebug", "比对结果 - th匹配:$tempUpperMatch, tl匹配:$tempLowerMatch, hh匹配:$humUpperMatch, hl匹配:$humLowerMatch")
+        
+        // 所有阈值都匹配才确认成功
+        if (tempUpperMatch && tempLowerMatch && humUpperMatch && humLowerMatch) {
+            android.util.Log.d("ThresholdDebug", "✅ 阈值确认成功！")
+            confirmDeviceState("threshold")
+        } else {
+            android.util.Log.d("ThresholdDebug", "❌ 阈值比对失败，不确认")
+        }
+        android.util.Log.d("ThresholdDebug", "====================================")
     }
 
     /**
@@ -375,23 +475,19 @@ class MonitorViewModel(
     }
     
     /**
-     * 带重试机制的指令发送（乐观更新 + 超时重试 + 失败回滚）
+     * 通用命令发送方法（带重试机制）
      * @param deviceKey 设备标识
      * @param command 要发送的指令
      * @param updateUi 立即更新UI的回调（乐观更新）
      * @param rollbackUi 失败时回滚UI的回调
      * @param pendingMsg pending 状态下的提示消息
-     * @param maxRetries 最大重试次数，默认3次
-     * @param timeoutMs 每次超时时间，默认2000ms
      */
     private fun sendCommandWithRetry(
         deviceKey: String,
         command: String,
         updateUi: () -> Unit,
         rollbackUi: () -> Unit,
-        pendingMsg: String,
-        maxRetries: Int = 3,
-        timeoutMs: Long = 2000
+        pendingMsg: String
     ) {
         // 0. 检查点击节流（防止短时间内连续点击）
         if (!checkClickThrottle(deviceKey)) {
@@ -408,47 +504,49 @@ class MonitorViewModel(
             return
         }
         
-        // 1. 乐观更新 UI
+        // 1. 获取当前状态（在乐观更新之前）
+        val currentStateBeforeUpdate = getCurrentState(deviceKey)
+        
+        // 2. 乐观更新 UI
         updateUi()
         
-        // 2. 标记为 pending
-        val operation = PendingOperation(deviceKey = deviceKey, targetState = !getCurrentState(deviceKey))
+        // 3. 标记为 pending（使用更新前的状态计算目标状态）
+        val operation = PendingOperation(deviceKey = deviceKey, targetState = !currentStateBeforeUpdate)
         _pendingOperations.update { it + (deviceKey to operation) }
         
-        // 3. 启动带重试的发送流程
+        // 4. 启动带重试的发送流程
         viewModelScope.launch {
             var success = false
-            var attempt = 0
             
-            while (attempt <= maxRetries && !success) {
+            for (attempt in 1..MAX_RETRY_COUNT) {
+                android.util.Log.d("RetryDebug", "[${getDeviceName(deviceKey)}] 第${attempt}/${MAX_RETRY_COUNT}次尝试发送指令: $command")
+                
                 // 发送指令
                 sendCommandToDevice("control", command)
                 
                 // 等待服务器确认（超时检测）
-                val confirmed = waitForConfirmation(deviceKey, timeoutMs)
+                val confirmed = waitForConfirmation(deviceKey, RETRY_TIMEOUT_MS)
                 
                 if (confirmed) {
+                    android.util.Log.d("RetryDebug", "[${getDeviceName(deviceKey)}] ✅ 第${attempt}次尝试成功")
                     success = true
-                    // 清除 pending 状态（已在 parseBemfaMessage 中清除）
+                    break
                 } else {
-                    attempt++
-                    if (attempt <= maxRetries) {
-                        // 更新重试计数
-                        _pendingOperations.update { pendingMap ->
-                            pendingMap[deviceKey]?.let { op ->
-                                pendingMap + (deviceKey to op.copy(retryCount = attempt))
-                            } ?: pendingMap
-                        }
-                    }
+                    android.util.Log.d("RetryDebug", "[${getDeviceName(deviceKey)}] ❌ 第${attempt}次尝试超时")
                 }
             }
             
-            // 4. 如果所有重试都失败，回滚 UI
+            // 5. 如果所有重试都失败，回滚 UI
             if (!success) {
                 rollbackUi()
                 clearPendingOperation(deviceKey)
                 _failureEvents.value = "${getDeviceName(deviceKey)}控制失败，请检查网络连接"
             }
+            // 注意：成功时不显示提示，仅通过UI状态变化反馈
+            // 如需显示成功提示，可取消下面注释
+            // else {
+            //     _failureEvents.value = "${getDeviceName(deviceKey)}控制成功"
+            // }
         }
     }
     
@@ -458,7 +556,7 @@ class MonitorViewModel(
     private suspend fun waitForConfirmation(deviceKey: String, timeoutMs: Long): Boolean {
         val startTime = System.currentTimeMillis()
         while (System.currentTimeMillis() - startTime < timeoutMs) {
-            delay(100) // 每100ms检查一次
+            delay(CONFIRMATION_CHECK_INTERVAL_MS)
             if (_pendingOperations.value[deviceKey] == null) {
                 return true // 已被 parseBemfaMessage 清除，说明收到确认
             }
@@ -571,11 +669,11 @@ class MonitorViewModel(
             return
         }
         
-        // 保存旧值用于回滚
-        val oldTempLower = _uiState.value.tempLowerLimit
-        val oldTempUpper = _uiState.value.tempUpperLimit
-        val oldHumLower = _uiState.value.humLowerLimit
-        val oldHumUpper = _uiState.value.humUpperLimit
+        // 保存旧值用于回滚（如果为 null，使用默认值）
+        val oldTempLower = _uiState.value.tempLowerLimit ?: 20.0f
+        val oldTempUpper = _uiState.value.tempUpperLimit ?: 25.0f
+        val oldHumLower = _uiState.value.humLowerLimit ?: 60.0f
+        val oldHumUpper = _uiState.value.humUpperLimit ?: 70.0f
         
         // 乐观更新 UI
         _uiState.update {
@@ -602,18 +700,16 @@ class MonitorViewModel(
         viewModelScope.launch {
             var success = false
             var attempt = 0
-            val maxRetries = 3
-            val timeoutMs = 2000L
             
             // 构造指令（使用正确的格式：分号分隔）
             val msg = "wendu_low=$newTempLower;wendu_high=$newTempUpper;shidu_low=$newHumLower;shidu_high=$newHumUpper"
             
-            while (attempt < maxRetries && !success) {  // 修正：attempt < maxRetries（最多3次）
+            while (attempt < MAX_RETRY_COUNT && !success) {
                 // 发送指令
                 sendCommandToDevice("control", msg)
                 
                 // 等待服务器确认（通过检查 pending 状态是否被清除）
-                val confirmed = waitForConfirmation("threshold", timeoutMs)
+                val confirmed = waitForConfirmation("threshold", RETRY_TIMEOUT_MS)
                 
                 if (confirmed) {
                     success = true
@@ -627,7 +723,7 @@ class MonitorViewModel(
             
             // 循环结束后，再检查一次是否成功（给最后一次尝试留出确认时间）
             if (!success) {
-                val finalCheck = waitForConfirmation("threshold", timeoutMs)
+                val finalCheck = waitForConfirmation("threshold", RETRY_TIMEOUT_MS)
                 if (finalCheck) {
                     success = true
                     _failureEvents.value = "阈值下发成功"

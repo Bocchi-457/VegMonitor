@@ -28,7 +28,8 @@ import com.boc.vegmonitor.ui.theme.VegMonitorTheme
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MonitorScreen(
-    viewModel: MonitorViewModel = viewModel()
+    viewModel: MonitorViewModel = viewModel(),
+    snackbarHostState: SnackbarHostState
 ) {
     // 监听 ViewModel 中的状态
     val state by viewModel.uiState.collectAsState()
@@ -37,9 +38,6 @@ fun MonitorScreen(
     val failureEvent by viewModel.failureEvents.collectAsState()
     val pendingEvent by viewModel.pendingEvents.collectAsState()
     val throttleEvent by viewModel.throttleEvents.collectAsState()
-    
-    // Snackbar 宿主
-    val snackbarHostState = remember { SnackbarHostState() }
     
     // 监听失败事件并显示 Snackbar
     LaunchedEffect(failureEvent) {
@@ -68,28 +66,18 @@ fun MonitorScreen(
         }
     }
 
-    Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) }
-    ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(bottom = innerPadding.calculateBottomPadding())
-        ) {
-            TopAppBar(title = { Text("VegMonitor 蔬控宝") }, actions = {
-                HeaderOnlineStatus(isOnline = state.isOnline)
-            })
-
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(start = 16.dp, end = 16.dp, top = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
                 // 实时温湿度卡片
                 item {
                     RealTimeTempHumCard(
-                        currentTemp = state.currentTemp, currentHumidity = state.currentHumidity
+                        currentTemp = state.currentTemp,
+                        currentHumidity = state.currentHumidity,
+                        hasReceivedData = state.hasReceivedData
                     )
                 }
 
@@ -119,49 +107,47 @@ fun MonitorScreen(
                         onToggleMode = { viewModel.toggleAutoMode(it) })
                 }
 
-                // 设备手动控制区卡片
-                item {
-                    DeviceControlGridCard(
-                        isAutoMode = state.isAutoMode,
-                        isOnline = state.isOnline,  // 传递在线状态
-                        isHeaterOn = state.isHeaterOn,
-                        isCoolerOn = state.isCoolerOn,
-                        isHumidifierOn = state.isHumidifierOn,
-                        isDehumidifierOn = state.isDehumidifierOn,
-                        onToggleHeater = { viewModel.toggleHeater(it) },
-                        onToggleCooler = { viewModel.toggleCooler(it) },
-                        onToggleHumidifier = { viewModel.toggleHumidifier(it) },
-                        onToggleDehumidifier = { viewModel.toggleDehumidifier(it) })
-                }
+            // 设备手动控制区卡片
+            item {
+                DeviceControlGridCard(
+                    isAutoMode = state.isAutoMode,
+                    isOnline = state.isOnline,  // 传递在线状态
+                    isHeaterOn = state.isHeaterOn,
+                    isCoolerOn = state.isCoolerOn,
+                    isHumidifierOn = state.isHumidifierOn,
+                    isDehumidifierOn = state.isDehumidifierOn,
+                    onToggleHeater = { viewModel.toggleHeater(it) },
+                    onToggleCooler = { viewModel.toggleCooler(it) },
+                    onToggleHumidifier = { viewModel.toggleHumidifier(it) },
+                    onToggleDehumidifier = { viewModel.toggleDehumidifier(it) })
             }
-        }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ThresholdSettingCard(
-    tempLower: Float,
-    tempUpper: Float,
-    humLower: Float,
-    humUpper: Float,
+    tempLower: Float?,
+    tempUpper: Float?,
+    humLower: Float?,
+    humUpper: Float?,
     isOnline: Boolean,  // 新增：在线状态
     onSetThreshold: (Float, Float, Float, Float) -> Unit  // 修改：接收 4 个参数
 ) {
-    var minTempInput by remember { mutableStateOf(tempLower.toString()) }
-    var maxTempInput by remember { mutableStateOf(tempUpper.toString()) }
-    var minHumidityInput by remember { mutableStateOf(humLower.toString()) }
-    var maxHumidityInput by remember { mutableStateOf(humUpper.toString()) }
+    var minTempInput by remember { mutableStateOf(tempLower?.toString() ?: "") }
+    var maxTempInput by remember { mutableStateOf(tempUpper?.toString() ?: "") }
+    var minHumidityInput by remember { mutableStateOf(humLower?.toString() ?: "") }
+    var maxHumidityInput by remember { mutableStateOf(humUpper?.toString() ?: "") }
     
     // 获取 FocusManager 用于清除焦点
     val focusManager = LocalFocusManager.current
 
     // 当外部传入的阈值数据更新时，同步到输入框
     LaunchedEffect(tempLower, tempUpper, humLower, humUpper) {
-        minTempInput = tempLower.toString()
-        maxTempInput = tempUpper.toString()
-        minHumidityInput = humLower.toString()
-        maxHumidityInput = humUpper.toString()
+        minTempInput = tempLower?.toString() ?: ""
+        maxTempInput = tempUpper?.toString() ?: ""
+        minHumidityInput = humLower?.toString() ?: ""
+        maxHumidityInput = humUpper?.toString() ?: ""
     }
     
     /**
@@ -358,10 +344,10 @@ fun ThresholdSettingCard(
                     // 所有验证通过，清除焦点并执行下发
                     focusManager.clearFocus()
                     
-                    val newMinTemp = minTemp ?: tempLower
-                    val newMaxTemp = maxTemp ?: tempUpper
-                    val newMinHumidity = minHum ?: humLower
-                    val newMaxHumidity = maxHum ?: humUpper
+                    val newMinTemp = minTemp ?: (tempLower ?: 20.0f)
+                    val newMaxTemp = maxTemp ?: (tempUpper ?: 25.0f)
+                    val newMinHumidity = minHum ?: (humLower ?: 60.0f)
+                    val newMaxHumidity = maxHum ?: (humUpper ?: 70.0f)
                     onSetThreshold(newMinTemp, newMaxTemp, newMinHumidity, newMaxHumidity)
                 },
                 modifier = Modifier.fillMaxWidth(),
@@ -378,28 +364,12 @@ fun ThresholdSettingCard(
     }
 }
 
-// 头部在线状态组件
-@Composable
-private fun HeaderOnlineStatus(isOnline: Boolean) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(end = 16.dp)
-    ) {
-        Icon(
-            imageVector = if (isOnline) Icons.Rounded.CloudDone else Icons.Rounded.CloudOff,
-            contentDescription = "Online Status",
-            tint = if (isOnline) Color(0xFF4CAF50) else Color.Red
-        )
-        Spacer(modifier = Modifier.width(4.dp))
-        Text(
-            text = if (isOnline) "设备在线" else "设备离线", fontSize = 14.sp
-        )
-    }
-}
-
 // 实时温湿度显示卡片
 @Composable
 fun RealTimeTempHumCard(
-    currentTemp: Float, currentHumidity: Float
+    currentTemp: Float?,
+    currentHumidity: Float?,
+    hasReceivedData: Boolean
 ) {
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -409,16 +379,16 @@ fun RealTimeTempHumCard(
             horizontalArrangement = Arrangement.SpaceAround
         ) {
             // 温度显示
-            TempDisplayColumn(currentTemp = currentTemp)
+            TempDisplayColumn(currentTemp = currentTemp, hasReceivedData = hasReceivedData)
             // 湿度显示
-            HumidityDisplayColumn(currentHumidity = currentHumidity)
+            HumidityDisplayColumn(currentHumidity = currentHumidity, hasReceivedData = hasReceivedData)
         }
     }
 }
 
 // 温度显示列
 @Composable
-private fun TempDisplayColumn(currentTemp: Float) {
+private fun TempDisplayColumn(currentTemp: Float?, hasReceivedData: Boolean) {
     Column(modifier = Modifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
@@ -427,14 +397,16 @@ private fun TempDisplayColumn(currentTemp: Float) {
             Text(stringResource(R.string.current_temp), color = Color.Gray)
         }
         Text(
-            text = "$currentTemp °C", fontSize = 32.sp, fontWeight = FontWeight.Bold
+            text = if (currentTemp != null) "$currentTemp °C" else "-",
+            fontSize = 32.sp,
+            fontWeight = FontWeight.Bold
         )
     }
 }
 
 // 湿度显示列
 @Composable
-private fun HumidityDisplayColumn(currentHumidity: Float) {
+private fun HumidityDisplayColumn(currentHumidity: Float?, hasReceivedData: Boolean) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
@@ -443,7 +415,9 @@ private fun HumidityDisplayColumn(currentHumidity: Float) {
             Text(stringResource(R.string.current_hum), color = Color.Gray)
         }
         Text(
-            text = "$currentHumidity %", fontSize = 32.sp, fontWeight = FontWeight.Bold
+            text = if (currentHumidity != null) "$currentHumidity %" else "-",
+            fontSize = 32.sp,
+            fontWeight = FontWeight.Bold
         )
     }
 }
@@ -589,6 +563,7 @@ fun DeviceControlCard(
 @Composable
 fun MonitorScreenPreview() {
     VegMonitorTheme {
-        MonitorScreen()
+        val snackbarHostState = remember { SnackbarHostState() }
+        MonitorScreen(snackbarHostState = snackbarHostState)
     }
 }
