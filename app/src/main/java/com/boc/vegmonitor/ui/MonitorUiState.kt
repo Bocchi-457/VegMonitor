@@ -19,5 +19,13 @@ data class MonitorUiState(
     val isHeaterOn: Boolean = false,
     val isCoolerOn: Boolean = false,
     val isHumidifierOn: Boolean = false,
-    val isDehumidifierOn: Boolean = false
+    val isDehumidifierOn: Boolean = false,
+    
+    // Pending状态标记（用于显示加载动画）
+    val isModePending: Boolean = false,
+    val isHeaterPending: Boolean = false,
+    val isCoolerPending: Boolean = false,
+    val isHumidifierPending: Boolean = false,
+    val isDehumidifierPending: Boolean = false,
+    val isThresholdPending: Boolean = false
 )

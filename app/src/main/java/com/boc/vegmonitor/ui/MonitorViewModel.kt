@@ -48,7 +48,7 @@ class MonitorViewModel(
         private const val MAX_RETRY_COUNT = 3
         
         // 每次重试超时时间（毫秒）
-        private const val RETRY_TIMEOUT_MS = 2000L
+        private const val RETRY_TIMEOUT_MS = 3000L
     }
 
     private val _uiState = MutableStateFlow(MonitorUiState())
@@ -507,14 +507,17 @@ class MonitorViewModel(
         // 1. 获取当前状态（在乐观更新之前）
         val currentStateBeforeUpdate = getCurrentState(deviceKey)
         
-        // 2. 乐观更新 UI
+        // 2. 设置pending状态为true（触发加载动画）
+        setDevicePendingState(deviceKey, true)
+        
+        // 3. 乐观更新 UI
         updateUi()
         
-        // 3. 标记为 pending（使用更新前的状态计算目标状态）
+        // 4. 标记为 pending（使用更新前的状态计算目标状态）
         val operation = PendingOperation(deviceKey = deviceKey, targetState = !currentStateBeforeUpdate)
         _pendingOperations.update { it + (deviceKey to operation) }
         
-        // 4. 启动带重试的发送流程
+        // 5. 启动带重试的发送流程
         viewModelScope.launch {
             var success = false
             
@@ -536,7 +539,10 @@ class MonitorViewModel(
                 }
             }
             
-            // 5. 如果所有重试都失败，回滚 UI
+            // 6. 清除pending状态
+            setDevicePendingState(deviceKey, false)
+            
+            // 7. 如果所有重试都失败，回滚 UI
             if (!success) {
                 rollbackUi()
                 clearPendingOperation(deviceKey)
@@ -575,7 +581,25 @@ class MonitorViewModel(
      * 确认设备状态（由 parseBemfaMessage 调用）
      */
     private fun confirmDeviceState(deviceKey: String) {
+        // 清除pending状态
+        setDevicePendingState(deviceKey, false)
         clearPendingOperation(deviceKey)
+    }
+    
+    /**
+     * 设置设备pending状态
+     */
+    private fun setDevicePendingState(deviceKey: String, isPending: Boolean) {
+        _uiState.update { state ->
+            when (deviceKey) {
+                "mode" -> state.copy(isModePending = isPending)
+                "heater" -> state.copy(isHeaterPending = isPending)
+                "cooler" -> state.copy(isCoolerPending = isPending)
+                "humidifier" -> state.copy(isHumidifierPending = isPending)
+                "dehumidifier" -> state.copy(isDehumidifierPending = isPending)
+                else -> state
+            }
+        }
     }
     
     /**
@@ -669,6 +693,9 @@ class MonitorViewModel(
             return
         }
         
+        // 设置pending状态
+        _uiState.update { it.copy(isThresholdPending = true) }
+        
         // 保存旧值用于回滚（如果为 null，使用默认值）
         val oldTempLower = _uiState.value.tempLowerLimit ?: 20.0f
         val oldTempUpper = _uiState.value.tempUpperLimit ?: 25.0f
@@ -713,9 +740,6 @@ class MonitorViewModel(
                 
                 if (confirmed) {
                     success = true
-                    // pending 已在 parseBemfaMessage 中清除
-                    // 显示成功提示
-                    _failureEvents.value = "阈值下发成功"
                 } else {
                     attempt++
                 }
@@ -726,12 +750,17 @@ class MonitorViewModel(
                 val finalCheck = waitForConfirmation("threshold", RETRY_TIMEOUT_MS)
                 if (finalCheck) {
                     success = true
-                    _failureEvents.value = "阈值下发成功"
                 }
             }
             
-            // 如果所有重试都失败，回滚 UI
-            if (!success) {
+            // 清除pending状态
+            _uiState.update { it.copy(isThresholdPending = false) }
+            
+            // 根据结果给出相应提示
+            if (success) {
+                _failureEvents.value = "阈值下发成功"
+            } else {
+                // 回滚 UI
                 _uiState.update {
                     it.copy(
                         tempLowerLimit = oldTempLower,
