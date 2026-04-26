@@ -137,15 +137,18 @@ class MonitorViewModel(
 
     init {
         if (userDao != null) {
-            // 1. 初始化时，从数据库读取用户信息并连接 TCP
+            // 监听用户信息变化，管理TCP连接
             viewModelScope.launch {
                 userDao.getLoggedInUser().collect { user ->
                     if (user != null && user.bemfaUid.isNotEmpty()) {
-                        // 获取用户信息
+                        // 用户已登录，建立TCP连接
                         currentUserUid = user.bemfaUid
                         connectToBemfa()
                     } else {
-                        // 断线
+                        // 用户未登录，断开TCP连接并清空UID
+                        currentUserUid = ""
+                        reconnectJob?.cancel()
+                        tcpClient.disconnect(notifyStateChange = true)
                         _uiState.update { it.copy(isOnline = false) }
                     }
                 }
@@ -227,9 +230,9 @@ class MonitorViewModel(
                 if (_uiState.value.isOnline != isHardwareOnline) {
                     _uiState.update { it.copy(isOnline = isHardwareOnline) }
                     if (!isHardwareOnline) {
-                        android.util.Log.d("HardwareStatus", "⚠️ 硬件已离线（超过10秒未收到数据）")
+                        android.util.Log.d("HardwareStatus", "硬件已离线（超过10秒未收到数据）")
                     } else {
-                        android.util.Log.d("HardwareStatus", "✅ 硬件已上线")
+                        android.util.Log.d("HardwareStatus", "硬件已上线")
                     }
                 }
             }
@@ -405,10 +408,10 @@ class MonitorViewModel(
         val expectedValue = if (pendingOp.targetState) "1" else "0"
         
         if (serverValue == expectedValue) {
-            android.util.Log.d("${deviceKey.capitalize()}Debug", "✅ ${getDeviceName(deviceKey)}确认成功 - 服务器:$serverValue, 期望:$expectedValue")
+            android.util.Log.d("${deviceKey.capitalize()}Debug", "${getDeviceName(deviceKey)}确认成功 - 服务器:$serverValue, 期望:$expectedValue")
             confirmDeviceState(deviceKey)
         } else {
-            android.util.Log.d("${deviceKey.capitalize()}Debug", "❌ ${getDeviceName(deviceKey)}状态不匹配 - 服务器:$serverValue, 期望:$expectedValue")
+            android.util.Log.d("${deviceKey.capitalize()}Debug", "${getDeviceName(deviceKey)}状态不匹配 - 服务器:$serverValue, 期望:$expectedValue")
         }
     }
     
@@ -423,7 +426,7 @@ class MonitorViewModel(
         // 检查所有阈值字段是否都存在
         if (data.tempUpper == null || data.tempLower == null || 
             data.humUpper == null || data.humLower == null) {
-            android.util.Log.d("ThresholdDebug", "❌ 阈值数据不完整，跳过确认")
+            android.util.Log.d("ThresholdDebug", "阈值数据不完整，跳过确认")
             return
         }
         
@@ -455,10 +458,10 @@ class MonitorViewModel(
         
         // 所有阈值都匹配才确认成功
         if (tempUpperMatch && tempLowerMatch && humUpperMatch && humLowerMatch) {
-            android.util.Log.d("ThresholdDebug", "✅ 阈值确认成功！")
+            android.util.Log.d("ThresholdDebug", "阈值确认成功！")
             confirmDeviceState("threshold")
         } else {
-            android.util.Log.d("ThresholdDebug", "❌ 阈值比对失败，不确认")
+            android.util.Log.d("ThresholdDebug", "阈值比对失败，不确认")
         }
         android.util.Log.d("ThresholdDebug", "====================================")
     }
@@ -531,11 +534,11 @@ class MonitorViewModel(
                 val confirmed = waitForConfirmation(deviceKey, RETRY_TIMEOUT_MS)
                 
                 if (confirmed) {
-                    android.util.Log.d("RetryDebug", "[${getDeviceName(deviceKey)}] ✅ 第${attempt}次尝试成功")
+                    android.util.Log.d("RetryDebug", "[${getDeviceName(deviceKey)}] 第${attempt}次尝试成功")
                     success = true
                     break
                 } else {
-                    android.util.Log.d("RetryDebug", "[${getDeviceName(deviceKey)}] ❌ 第${attempt}次尝试超时")
+                    android.util.Log.d("RetryDebug", "[${getDeviceName(deviceKey)}] 第${attempt}次尝试超时")
                 }
             }
             
