@@ -7,9 +7,11 @@ import androidx.lifecycle.viewModelScope
 import com.boc.vegmonitor.data.dao.UserDao
 import com.boc.vegmonitor.data.entity.User
 import com.boc.vegmonitor.data.network.BemfaApiService
+import com.boc.vegmonitor.data.network.BemfaTcpClient
 import com.boc.vegmonitor.data.network.LoginRequest
 import com.boc.vegmonitor.data.network.PhoneLoginRequest
 import com.boc.vegmonitor.data.repository.LoginFailureRepository
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,7 +21,8 @@ import kotlinx.coroutines.launch
 class MineViewModel(
     private val userDao: UserDao? = null,
     private val apiService: BemfaApiService? = null,
-    private val failureRepository: LoginFailureRepository? = null
+    private val failureRepository: LoginFailureRepository? = null,
+    private val tcpClient: BemfaTcpClient = BemfaTcpClient()
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MineUiState())
@@ -29,6 +32,9 @@ class MineViewModel(
     private var failedLoginCount = 0
     private var lastFailedTime: Long = 0
     private val maxFailedAttempts = 3
+    
+    // UID验证超时时间（毫秒）
+    private val VALIDATION_TIMEOUT_MS = 5000L
     
     // 锁定时间配置（毫秒）
     private val lockDurations = listOf(
@@ -272,9 +278,19 @@ class MineViewModel(
     }
 
     fun saveDirectUid() {
-        val uid = _uiState.value.directUidInput
+        val uid = _uiState.value.directUidInput.trim()
+        
+        // 基础验证：私钥不能为空
         if (uid.isBlank()) {
             _uiState.update { it.copy(errorMessage = "私钥不能为空") }
+            return
+        }
+        
+        // 格式验证：巴法云UID为32位十六进制字符串（小写字母+数字）
+        if (!uid.matches(Regex("^[a-f0-9]{32}$"))) {
+            _uiState.update { 
+                it.copy(errorMessage = "私钥格式不正确，应为32位小写字母和数字组合") 
+            }
             return
         }
         
@@ -283,9 +299,59 @@ class MineViewModel(
             return
         }
         
+        // 设置UID验证加载状态
+        _uiState.update { it.copy(isUidValidating = true, errorMessage = null, successMessage = null) }
+        
+        // 异步验证TCP连接并保存
         viewModelScope.launch {
-            userDao.insertUser(User(username = "本地直接绑定", bemfaUid = uid))
-            _uiState.update { it.copy(successMessage = "绑定成功", directUidInput = "") }
+            var validationSuccess = false
+            
+            try {
+                // 如果已连接，先断开旧连接
+                if (tcpClient.isConnected()) {
+                    tcpClient.disconnect()
+                    delay(500)
+                }
+                
+                // 尝试使用新UID建立连接
+                tcpClient.connectAndSubscribe(uid)
+                
+                // 等待5秒验证是否能正常通信
+                delay(VALIDATION_TIMEOUT_MS)
+                
+                // 检查连接状态
+                if (tcpClient.isConnected()) {
+                    validationSuccess = true
+                    android.util.Log.d("UidValidation", "UID验证成功，连接正常")
+                } else {
+                    android.util.Log.d("UidValidation", "UID验证失败，连接已断开")
+                }
+                
+            } catch (e: Exception) {
+                android.util.Log.e("UidValidation", "UID验证异常: ${e.message}")
+                validationSuccess = false
+            }
+            
+            if (validationSuccess) {
+                // 验证成功，保存UID到数据库
+                userDao.insertUser(User(username = "本地直接绑定", bemfaUid = uid))
+                _uiState.update { 
+                    it.copy(
+                        successMessage = "绑定成功", 
+                        directUidInput = "",
+                        isUidValidating = false
+                    ) 
+                }
+            } else {
+                // 验证失败，清理连接并提示用户
+                tcpClient.disconnect()
+                _uiState.update { 
+                    it.copy(
+                        errorMessage = "私钥验证失败，请检查是否正确或网络连接",
+                        isUidValidating = false
+                    ) 
+                }
+            }
         }
     }
 
@@ -302,12 +368,13 @@ class MineViewModel(
 class MineViewModelFactory(
     private val userDao: UserDao,
     private val apiService: BemfaApiService,
-    private val failureRepository: LoginFailureRepository? = null
+    private val failureRepository: LoginFailureRepository? = null,
+    private val tcpClient: BemfaTcpClient = BemfaTcpClient()
 ) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(MineViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return MineViewModel(userDao, apiService, failureRepository) as T
+            return MineViewModel(userDao, apiService, failureRepository, tcpClient) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }

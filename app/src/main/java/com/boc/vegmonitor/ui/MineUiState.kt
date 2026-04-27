@@ -12,6 +12,7 @@ data class MineUiState(
 
     // 网络请求与提示状态
     val isLoading: Boolean = false,
+    val isUidValidating: Boolean = false,
     val errorMessage: String? = null,
     val successMessage: String? = null,
     

@@ -209,14 +209,27 @@ fun DirectUidCard(state: MineUiState, viewModel: MineViewModel) {
                 onValueChange = { viewModel.onDirectUidChange(it) },
                 label = { Text("输入巴法云 UID") },
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true
+                singleLine = true,
+                enabled = !state.isUidValidating,
+                isError = state.errorMessage?.contains("私钥") == true,
+                supportingText = if (state.errorMessage?.contains("私钥") == true) {
+                    { Text(state.errorMessage!!) }
+                } else null
             )
 
             Button(
                 onClick = { viewModel.saveDirectUid() },
+                enabled = !state.isUidValidating,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("绑定")
+                if (state.isUidValidating) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        color = Color.White
+                    )
+                } else {
+                    Text("绑定")
+                }
             }
         }
     }

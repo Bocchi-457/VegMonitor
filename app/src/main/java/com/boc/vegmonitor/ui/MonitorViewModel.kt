@@ -405,7 +405,18 @@ class MonitorViewModel(
         if (!_pendingOperations.value.containsKey(deviceKey) || serverValue == null) return
         
         val pendingOp = _pendingOperations.value[deviceKey] ?: return
-        val expectedValue = if (pendingOp.targetState) "1" else "0"
+        
+        // 根据不同设备类型计算期望值
+        val expectedValue = when (deviceKey) {
+            "mode" -> {
+                // 控制模式：1=自动，2=手动
+                if (pendingOp.targetState) "1" else "2"
+            }
+            else -> {
+                // 其他设备：1=开，0=关
+                if (pendingOp.targetState) "1" else "0"
+            }
+        }
         
         if (serverValue == expectedValue) {
             android.util.Log.d("${deviceKey.capitalize()}Debug", "${getDeviceName(deviceKey)}确认成功 - 服务器:$serverValue, 期望:$expectedValue")
