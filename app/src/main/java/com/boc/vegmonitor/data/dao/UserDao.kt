@@ -6,7 +6,7 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface UserDao {
-    // 获取当前保存的用户信息（因为我们通常只存一个主账号，所以取第一个即可）
+    // 获取当前保存的用户信息（只存一个主账号，所以取第一个即可）
     @Query("SELECT * FROM users LIMIT 1")
     fun getLoggedInUser(): Flow<User?>
 

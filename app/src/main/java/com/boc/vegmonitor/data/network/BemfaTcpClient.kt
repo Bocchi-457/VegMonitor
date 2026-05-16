@@ -29,7 +29,7 @@ class BemfaTcpClient {
     // 连接巴法云并订阅主题
     suspend fun connectAndSubscribe(uid: String) = withContext(Dispatchers.IO) {
         try {
-            // 巴法云创客云 TCP 地址和端口
+            // 巴法云TCP地址和端口
             socket = Socket("bemfa.com", 8344)
             writer = PrintWriter(socket!!.getOutputStream(), true)
             reader = BufferedReader(InputStreamReader(socket!!.getInputStream()))

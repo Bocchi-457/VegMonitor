@@ -207,7 +207,7 @@ fun ThresholdSettingCard(
             return "$fieldName 格式不正确"
         }
 
-        if (value < min || value > max) {
+        if (value !in min..max) {
             return "$fieldName 必须在 $min 到 $max 之间"
         }
 

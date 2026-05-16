@@ -214,7 +214,7 @@ class MonitorViewModel(
 
     /**
      * 启动硬件在线状态检测定时器
-     * 每5秒检查一次，如果超过10秒未收到数据，则判定为离线
+     * 每3秒检查一次，如果超过10秒未收到数据，则判定为离线
      */
     private fun startHardwareOnlineCheck() {
         viewModelScope.launch {
